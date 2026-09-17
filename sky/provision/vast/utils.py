@@ -15,6 +15,44 @@ from sky.adaptors import vast
 logger = sky_logging.init_logger(__name__)
 
 
+def _build_offer_query(instance_type: str, disk_size: int, secure_only: bool) -> str:
+    """Build the Vast ``search_offers`` query in Vast's strict grammar.
+
+    ``instance_type`` is SkyPilot's internal encoding
+    (``{num_gpus}x-{gpu_name}-{cpu_cores}-{cpu_ram_mib}``, e.g.
+    ``1x-RTX_4090-32-65536``), where ``gpu_name`` is already underscore-stubbed.
+
+    Vast's parser silently discards malformed clauses instead of erroring, so a
+    query that merely looks right can drop every filter and provision an
+    arbitrary GPU. The grammar it enforces:
+      * values may not be quoted or contain spaces (the tokenizer stops at the
+        first quote/space and drops the rest of the query), so ``gpu_name`` is
+        sent in its underscore form and ``parse_query`` turns ``_`` back into a
+        space to match Vast's stored name;
+      * values may not contain decimals (truncated at the ``.``), so ``cpu_ram``
+        is an integer in GB, not a float MiB/1024.
+
+    There is deliberately no ``geolocation`` clause: the catalog stores one
+    snapshot row per (gpu, count) tuple, so its region is an artifact of when
+    that snapshot was taken, and pinning on it rejects every live offer outside
+    that one country.
+    """
+    parts = instance_type.split('-')
+    num_gpus = int(parts[0].replace('x', ''))
+    gpu_name = parts[1]
+    cpu_ram_gb = int(parts[-1]) // 1024
+    query = [
+        f'gpu_name={gpu_name}',
+        f'num_gpus={num_gpus}',
+        f'disk_space>={disk_size}',
+        f'cpu_ram>={cpu_ram_gb}',
+    ]
+    if secure_only:
+        query.append('datacenter=true')
+        query.append('hosting_type>=1')
+    return ' '.join(query)
+
+
 def list_instances() -> Dict[str, Dict[str, Any]]:
     """Lists instances associated with API key."""
     instances = vast.vast().show_instances()
@@ -111,23 +149,11 @@ def launch(name: str,
     # `ports` is currently unused. Keep it in the signature for caller
     # compatibility and future use (port-forwarding is handled separately).
     del ports
-    cpu_ram = float(instance_type.split('-')[-1]) / 1024
-    gpu_name = instance_type.split('-')[1].replace('_', ' ')
-    num_gpus = int(instance_type.split('-')[0].replace('x', ''))
+    # `region` drove the old geolocation pin, which is removed: the catalog's
+    # region is a snapshot artifact, not where the GPU is now.
+    del region
 
-    query = [
-        'chunked=true',
-        'georegion=true',
-        f'geolocation="{region[-2:]}"',
-        f'disk_space>={disk_size}',
-        f'num_gpus={num_gpus}',
-        f'gpu_name="{gpu_name}"',
-        f'cpu_ram>="{cpu_ram}"',
-    ]
-    if secure_only:
-        query.append('datacenter=true')
-        query.append('hosting_type>=1')
-    query_str = ' '.join(query)
+    query_str = _build_offer_query(instance_type, disk_size, secure_only)
 
     instance_list = vast.vast().search_offers(query=query_str)
 
