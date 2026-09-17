@@ -49,3 +49,40 @@ def test_secure_only_adds_datacenter_and_hosting() -> None:
 def test_multi_word_gpu_name_keeps_its_underscores() -> None:
     terms = _terms('1x-RTX_6000_Ada-48-131072')
     assert 'gpu_name=RTX_6000_Ada' in terms
+
+
+def test_register_ssh_key_attaches_to_the_instance(monkeypatch) -> None:
+    """The key must be registered with Vast, not only appended by onstart_cmd.
+
+    Vast owns the instance's authorized set and drops what it did not register,
+    which strands a running cluster with ``Permission denied (publickey)``.
+    """
+    calls = []
+
+    class _Client:
+
+        def attach_ssh(self, instance_id: int, ssh_key: str):
+            calls.append((instance_id, ssh_key))
+            return {'success': True}
+
+    monkeypatch.setattr(utils.vast, 'vast', lambda: _Client())
+    utils._register_ssh_key('42', '  ssh-rsa AAAA  ')
+    assert calls == [(42, 'ssh-rsa AAAA')]
+
+
+def test_register_ssh_key_warns_instead_of_raising(monkeypatch, caplog) -> None:
+    """A launch that works now must not abort, but the failure must be visible.
+
+    Registering on the account already fails silently for team API keys;
+    repeating that here would hide the same outage.
+    """
+
+    class _Client:
+
+        def attach_ssh(self, instance_id: int, ssh_key: str):
+            raise RuntimeError('boom')
+
+    monkeypatch.setattr(utils.vast, 'vast', lambda: _Client())
+    with caplog.at_level('WARNING'):
+        utils._register_ssh_key('42', 'ssh-rsa AAAA')
+    assert 'boom' in caplog.text

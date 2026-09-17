@@ -267,7 +267,40 @@ def launch(name: str,
     new_instance = vast.vast().show_instance(
         id=new_instance_contract['new_contract'])
 
+    if ssh_public_key:
+        _register_ssh_key(new_instance['id'], ssh_public_key)
+
     return new_instance['id']
+
+
+def _register_ssh_key(instance_id: str, ssh_public_key: str) -> None:
+    """Register the key with Vast, which owns the instance's authorized set.
+
+    Appending to ``~/.ssh/authorized_keys`` from ``onstart_cmd`` only holds
+    until Vast refreshes the instance, after which every new connection is
+    refused with ``Permission denied (publickey)`` while the job keeps running:
+    the control connection opened at setup survives, so ``sky status`` still
+    reports the cluster healthy while ``sky queue``/``sky logs``/``sky exec``
+    all fail. Observed 9 to 18 hours in.
+
+    The account-level path (``setup_vast_authentication``) is meant to cover
+    this, but Vast answers ``team_ssh_keys_not_supported`` (HTTP 400) for
+    team-scoped API keys and gives up silently. Attaching per instance is
+    accepted for those keys, and re-attaching an existing key is a safe no-op.
+    """
+    try:
+        result = vast.vast().attach_ssh(
+            instance_id=int(instance_id), ssh_key=ssh_public_key.strip())
+    except Exception as exc:  # pylint: disable=broad-except
+        logger.warning(
+            f'Vast rejected the SSH key registration for instance '
+            f'{instance_id}: {exc}. The cluster will come up, but Vast may '
+            'stop accepting the key later, leaving a running job unreachable.')
+        return
+    if isinstance(result, dict) and not result.get('success', True):
+        logger.warning(
+            f'Vast did not register the SSH key for instance {instance_id}: '
+            f'{result.get("msg")}')
 
 
 def start(instance_id: str) -> None:
