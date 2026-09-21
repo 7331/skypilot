@@ -2400,6 +2400,13 @@ def get_config_schema():
             'required': [],
             'additionalProperties': False,
             'properties': {
+                'offer_filters': {
+                    'type': 'array',
+                    'items': {
+                        'type': 'string',
+                        'minLength': 1
+                    },
+                },
                 'datacenter_only': {
                     'type': 'boolean',
                 },

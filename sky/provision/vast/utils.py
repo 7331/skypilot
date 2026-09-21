@@ -10,27 +10,24 @@ import shlex
 from typing import Any, Dict, List, Optional
 
 from sky import sky_logging
+from sky import skypilot_config
 from sky.adaptors import vast
 
 logger = sky_logging.init_logger(__name__)
 
 
-def _build_offer_query(instance_type: str, disk_size: int, secure_only: bool) -> str:
+def _extra_offer_filters() -> List[str]:
+    """Additional Vast query clauses from validated operator configuration."""
+    return skypilot_config.get_nested(('vast', 'offer_filters'), [])
+
+
+def _build_offer_query(instance_type: str, disk_size: int,
+                       secure_only: bool) -> str:
     """Build the Vast ``search_offers`` query in Vast's strict grammar.
 
     ``instance_type`` is SkyPilot's internal encoding
     (``{num_gpus}x-{gpu_name}-{cpu_cores}-{cpu_ram_mib}``, e.g.
     ``1x-RTX_4090-32-65536``), where ``gpu_name`` is already underscore-stubbed.
-
-    Vast's parser silently discards malformed clauses instead of erroring, so a
-    query that merely looks right can drop every filter and provision an
-    arbitrary GPU. The grammar it enforces:
-      * values may not be quoted or contain spaces (the tokenizer stops at the
-        first quote/space and drops the rest of the query), so ``gpu_name`` is
-        sent in its underscore form and ``parse_query`` turns ``_`` back into a
-        space to match Vast's stored name;
-      * values may not contain decimals (truncated at the ``.``), so ``cpu_ram``
-        is an integer in GB, not a float MiB/1024.
 
     There is deliberately no ``geolocation`` clause: the catalog stores one
     snapshot row per (gpu, count) tuple, so its region is an artifact of when
@@ -50,6 +47,8 @@ def _build_offer_query(instance_type: str, disk_size: int, secure_only: bool) ->
     if secure_only:
         query.append('datacenter=true')
         query.append('hosting_type>=1')
+    # Operator clauses use Vast's own query grammar.
+    query.extend(_extra_offer_filters())
     return ' '.join(query)
 
 
@@ -289,8 +288,8 @@ def _register_ssh_key(instance_id: str, ssh_public_key: str) -> None:
     accepted for those keys, and re-attaching an existing key is a safe no-op.
     """
     try:
-        result = vast.vast().attach_ssh(
-            instance_id=int(instance_id), ssh_key=ssh_public_key.strip())
+        result = vast.vast().attach_ssh(instance_id=int(instance_id),
+                                        ssh_key=ssh_public_key.strip())
     except Exception as exc:  # pylint: disable=broad-except
         logger.warning(
             f'Vast rejected the SSH key registration for instance '

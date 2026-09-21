@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+RUN apt-get update && apt-get install --no-install-recommends -y openssh-client rsync sudo curl git gcc \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /usr/local/bin/uv
+WORKDIR /opt/skypilot
+COPY . .
+# Vast's SDK unnecessarily pins older cryptography/Pillow releases. Keep the patched versions
+# used by Portal; the rental smoke test exercises this combination.
+RUN printf 'cryptography==50.0.1\npillow==12.3.0\n' > /tmp/overrides.txt \
+    && uv pip install --system --override /tmp/overrides.txt '.[vast]' \
+    && rm /tmp/overrides.txt && rm -rf /root/.cache/uv
+ENV SKYPILOT_DISABLE_USAGE_COLLECTION=1
+HEALTHCHECK --interval=30s --timeout=5s CMD curl -fsS http://127.0.0.1:46580/api/health || exit 1
+CMD ["python", "-m", "sky.server.server", "--host", "0.0.0.0", "--port", "46580"]

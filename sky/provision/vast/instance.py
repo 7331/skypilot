@@ -163,7 +163,7 @@ def run_instances(region: str, cluster_name: str, cluster_name_on_cloud: str,
 
         time.sleep(POLL_INTERVAL)
 
-    head_instance_id = _get_head_instance_id(utils.list_instances())
+    head_instance_id = _get_head_instance_id(instances)
     assert head_instance_id is not None, 'head_instance_id should not be None'
     return common.ProvisionRecord(provider_name='vast',
                                   cluster_name=cluster_name_on_cloud,

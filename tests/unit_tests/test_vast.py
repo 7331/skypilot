@@ -1,23 +1,32 @@
-"""Unit tests for the Vast provisioner's offer-query builder."""
+"""Unit tests for the Vast provisioner."""
+# pylint: disable=protected-access
 
+from types import SimpleNamespace
+
+import jsonschema
+import pytest
+
+from sky.provision.vast import instance
 from sky.provision.vast import utils
+from sky.utils import schemas
 
 
-def _terms(instance_type: str, disk_size: int = 100, secure_only: bool = False) -> list[str]:
-    return utils._build_offer_query(instance_type, disk_size, secure_only).split(' ')
+def _terms(instance_type: str,
+           disk_size: int = 100,
+           secure_only: bool = False) -> list[str]:
+    return utils._build_offer_query(instance_type, disk_size,
+                                    secure_only).split(' ')
 
 
 def test_gpu_name_is_underscore_form_without_quotes() -> None:
     terms = _terms('1x-RTX_4090-32-65536')
     assert 'gpu_name=RTX_4090' in terms
-    # A quoted value with a space stops Vast's tokenizer and drops every later filter.
     assert not any('"RTX 4090"' in term for term in terms)
 
 
 def test_cpu_ram_is_an_integer_in_gb() -> None:
     terms = _terms('1x-RTX_4090-32-65536')
     assert 'cpu_ram>=64' in terms
-    # A decimal is truncated at the '.' by Vast's parser, dropping the rest of the query.
     assert not any('.' in term for term in terms)
 
 
@@ -30,7 +39,7 @@ def test_disk_and_gpu_count_are_sent() -> None:
 
 
 def test_no_geolocation_clause() -> None:
-    # The catalog region is a snapshot artifact; pinning on it rejects offers elsewhere.
+    # Snapshot regions must not exclude live offers elsewhere.
     assert 'geolocation' not in _terms('1x-RTX_4090-32-65536')
 
 
@@ -65,7 +74,7 @@ def test_register_ssh_key_attaches_to_the_instance(monkeypatch) -> None:
             calls.append((instance_id, ssh_key))
             return {'success': True}
 
-    monkeypatch.setattr(utils.vast, 'vast', lambda: _Client())
+    monkeypatch.setattr(utils.vast, 'vast', _Client)
     utils._register_ssh_key('42', '  ssh-rsa AAAA  ')
     assert calls == [(42, 'ssh-rsa AAAA')]
 
@@ -82,7 +91,61 @@ def test_register_ssh_key_warns_instead_of_raising(monkeypatch, caplog) -> None:
         def attach_ssh(self, instance_id: int, ssh_key: str):
             raise RuntimeError('boom')
 
-    monkeypatch.setattr(utils.vast, 'vast', lambda: _Client())
+    monkeypatch.setattr(utils.vast, 'vast', _Client)
     with caplog.at_level('WARNING'):
         utils._register_ssh_key('42', 'ssh-rsa AAAA')
     assert 'boom' in caplog.text
+
+
+def _with_filters(monkeypatch, value):
+    monkeypatch.setattr(utils.skypilot_config, 'get_nested',
+                        lambda keys, default_value: value)
+
+
+def test_operator_offer_filters_are_appended_verbatim(monkeypatch) -> None:
+    _with_filters(monkeypatch, ['vms_enabled=true'])
+    terms = _terms('1x-RTX_4090-32-65536', 50)
+    assert terms[:4] == [
+        'gpu_name=RTX_4090', 'num_gpus=1', 'disk_space>=50', 'cpu_ram>=64'
+    ]
+    assert terms[-1] == 'vms_enabled=true'
+
+
+def test_offer_filters_config_schema() -> None:
+    schema = schemas.get_config_schema()
+    jsonschema.validate({'vast': {
+        'offer_filters': ['vms_enabled=true']
+    }}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({'vast': {
+            'offer_filters': 'vms_enabled=true'
+        }}, schema)
+
+
+def test_no_filter_config_leaves_the_query_unchanged(monkeypatch) -> None:
+    _with_filters(monkeypatch, [])
+    assert _terms('1x-RTX_4090-32-65536', 50) == [
+        'gpu_name=RTX_4090', 'num_gpus=1', 'disk_space>=50', 'cpu_ram>=64'
+    ]
+
+
+def test_launch_returns_its_own_head_on_a_shared_account(monkeypatch) -> None:
+    other = {'name': 'other-head', 'status': 'RUNNING', 'ssh_port': 22}
+    own = {'name': 'own-head', 'status': 'RUNNING', 'ssh_port': 22}
+    reads = iter([{'other-id': other}, {'other-id': other, 'own-id': own}])
+    monkeypatch.setattr(utils, 'list_instances', lambda: next(reads))
+    monkeypatch.setattr(utils, 'launch', lambda **kwargs: 'own-id')
+    config = SimpleNamespace(provider_config={},
+                             authentication_config={},
+                             docker_config={},
+                             node_config={
+                                 'ImageId': 'image',
+                                 'InstanceType': 'type',
+                                 'DiskSize': 60,
+                                 'Preemptible': False
+                             },
+                             resume_stopped_nodes=True,
+                             count=1,
+                             ports_to_open_on_launch=[])
+    record = instance.run_instances('region', 'own', 'own', config)
+    assert record.head_instance_id == 'own-id'
