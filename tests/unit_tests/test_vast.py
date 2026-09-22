@@ -149,3 +149,28 @@ def test_launch_returns_its_own_head_on_a_shared_account(monkeypatch) -> None:
                              ports_to_open_on_launch=[])
     record = instance.run_instances('region', 'own', 'own', config)
     assert record.head_instance_id == 'own-id'
+
+
+@pytest.mark.parametrize('direct,expected', [
+    (True, ('203.0.113.1', 40101)),
+    (False, ('ssh9.vast.ai', 20840)),
+])
+def test_ssh_address_and_port_belong_to_the_same_endpoint(
+        monkeypatch, direct, expected) -> None:
+    info = {
+        'name': 'own-head',
+        'status': 'RUNNING',
+        'ssh_host': 'ssh9.vast.ai',
+        'ssh_port': 20840,
+        'public_ipaddr': '203.0.113.1',
+        'local_ipaddrs': '10.0.0.1',
+        'ports': {
+            '22/tcp': [{
+                'HostPort': '40101'
+            }]
+        } if direct else {}
+    }
+    monkeypatch.setattr(utils, 'list_instances', lambda: {'own-id': info})
+    result = instance.get_cluster_info('region', 'own')
+    host = result.instances['own-id'][0]
+    assert (host.external_ip, host.ssh_port) == expected

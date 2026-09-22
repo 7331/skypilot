@@ -229,16 +229,14 @@ def get_cluster_info(
     instances: Dict[str, List[common.InstanceInfo]] = {}
     head_instance_id = None
     for instance_id, instance_info in running_instances.items():
-        # Vast.ai routes SSH through a gateway (ssh_host, e.g. ssh3.vast.ai).
-        # Using public_ipaddr directly causes SSH timeouts because direct
-        # access is blocked; the gateway is the only reachable path.
-        # ssh_port is always set; ports['22/tcp'] may be None in newer API.
-        ssh_host = (instance_info.get('ssh_host') or
-                    instance_info.get('public_ipaddr', ''))
-        ports_dict = instance_info.get('ports') or {}
-        tcp22 = ports_dict.get('22/tcp') or []
-        ssh_port = (int(tcp22[0]['HostPort'])
-                    if tcp22 else instance_info.get('ssh_port'))
+        # A published direct port belongs to the public IP, not the SSH gateway.
+        tcp22 = (instance_info.get('ports') or {}).get('22/tcp') or []
+        if tcp22 and instance_info.get('public_ipaddr'):
+            ssh_host = instance_info['public_ipaddr']
+            ssh_port = int(tcp22[0]['HostPort'])
+        else:
+            ssh_host = instance_info.get('ssh_host') or ''
+            ssh_port = instance_info.get('ssh_port')
         instances[instance_id] = [
             common.InstanceInfo(
                 instance_id=instance_id,
